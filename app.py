@@ -187,10 +187,10 @@ class RAGEvaluator:
 
         return {
             "Retrieval Metrics": {
-                "Average Precision": safe_average(precisions),
-                "Average Recall": safe_average(recalls),
-                "Average F1 Score": safe_average(f1_scores),
-                "Mean Reciprocal Rank (MRR)": safe_average(mrr_scores),
+                #"Average Precision": safe_average(precisions),
+                #"Average Recall": safe_average(recalls),
+                #"Average F1 Score": safe_average(f1_scores),
+                #"Mean Reciprocal Rank (MRR)": safe_average(mrr_scores),
                 "Average Retrieval Time (seconds)": round(total_retrieval_time / len(queries), 4)
             }
         }
