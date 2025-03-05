@@ -1,6 +1,6 @@
 streamlit
 openai
-chromadb
+pinecone
 tiktoken
 requests
 PyPDF2
