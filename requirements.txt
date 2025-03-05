@@ -5,3 +5,4 @@ tiktoken
 requests
 PyPDF2
 python-docx
+scikit-learn
