@@ -1,6 +1,6 @@
 import os
 import streamlit as st
-import pinecone
+from pinecone import Pinecone, ServerlessSpec
 from typing import List
 import openai
 from openai import OpenAI
@@ -57,30 +57,31 @@ class TextSplitter:
         return chunks
 
 class RAGAssistant:
-    def __init__(self, openai_api_key: str, pinecone_api_key: str, pinecone_env: str):
+    def __init__(self, openai_api_key: str, pinecone_api_key: str, cloud: str = 'aws', region: str = 'us-west-2'):
         """Initialize RAG Assistant with OpenAI API and Pinecone"""
         # OpenAI Client
         self.openai_client = OpenAI(api_key=openai_api_key)
         
         # Pinecone Initialization
-        pinecone.init(
-            api_key=pinecone_api_key,
-            environment=pinecone_env
-        )
+        self.pc = Pinecone(api_key=pinecone_api_key)
         
         # Create or connect to index
         index_name = "coding-assistant-index"
         
         # Check if index exists, create if not
-        if index_name not in pinecone.list_indexes():
-            pinecone.create_index(
+        if index_name not in [index.name for index in self.pc.list_indexes()]:
+            self.pc.create_index(
                 name=index_name, 
                 dimension=1536,  # OpenAI embedding dimension
-                metric='cosine'
+                metric='cosine',
+                spec=ServerlessSpec(
+                    cloud=cloud,
+                    region=region
+                )
             )
         
         # Connect to the index
-        self.index = pinecone.Index(index_name)
+        self.index = self.pc.Index(index_name)
 
     def embed_documents(self, documents: List[str]):
         """Embed documents using OpenAI embeddings and store in Pinecone"""
@@ -152,7 +153,10 @@ def main():
     # API Key Inputs
     openai_api_key = st.text_input("Enter your OpenAI API Key", type="password")
     pinecone_api_key = st.text_input("Enter your Pinecone API Key", type="password")
-    pinecone_env = st.text_input("Enter your Pinecone Environment (e.g., gcp-starter)")
+    
+    # Cloud and Region Selection
+    cloud = st.selectbox("Select Cloud Provider", ["aws", "gcp", "azure"])
+    region = st.text_input("Enter Region (e.g., us-west-2)", value="us-west-2")
     
     # Document Upload Section
     st.header("Upload Documents")
@@ -167,7 +171,7 @@ def main():
     
     if st.button("Process Documents"):
         # Validate API keys
-        if not (openai_api_key and pinecone_api_key and pinecone_env):
+        if not (openai_api_key and pinecone_api_key):
             st.error("Please enter all API keys")
             return
         
@@ -195,7 +199,12 @@ def main():
                 chunks.extend(TextSplitter.split_text(doc))
             
             # Initialize RAG Assistant
-            rag_assistant = RAGAssistant(openai_api_key, pinecone_api_key, pinecone_env)
+            rag_assistant = RAGAssistant(
+                openai_api_key, 
+                pinecone_api_key, 
+                cloud=cloud, 
+                region=region
+            )
             
             # Embed documents
             rag_assistant.embed_documents(chunks)
@@ -211,13 +220,18 @@ def main():
     
     if st.button("Get Answer"):
         # Validate API keys
-        if not (openai_api_key and pinecone_api_key and pinecone_env):
+        if not (openai_api_key and pinecone_api_key):
             st.error("Please enter all API keys")
             return
         
         try:
             # Initialize RAG Assistant
-            rag_assistant = RAGAssistant(openai_api_key, pinecone_api_key, pinecone_env)
+            rag_assistant = RAGAssistant(
+                openai_api_key, 
+                pinecone_api_key, 
+                cloud=cloud, 
+                region=region
+            )
             
             # Retrieve context
             context = rag_assistant.retrieve_context(query)
