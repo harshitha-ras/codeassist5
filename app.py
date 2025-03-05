@@ -75,8 +75,8 @@ class RAGAssistant:
                 dimension=1536,  # OpenAI embedding dimension
                 metric='cosine',
                 spec=ServerlessSpec(
-                    cloud='aws',
-                    region='us-east-1'
+                    cloud='gcp',  # Use GCP for free plan
+                    region='us-central1'
                 )
             )
         
@@ -110,7 +110,7 @@ class RAGAssistant:
             # Upsert to Pinecone
             self.index.upsert(vectors=vectors)
 
-    def retrieve_context(self, query: str, top_k: int = 3):
+    def retrieve_context(self, query: str, top_k: int = 5):
         """Retrieve most relevant documents using semantic search"""
         # Create query embedding
         query_embedding = self.openai_client.embeddings.create(
@@ -148,6 +148,22 @@ class RAGAssistant:
         return response.choices[0].message.content
 
 def main():
+    # Custom CSS to make text areas and layout more readable
+    st.markdown("""
+    <style>
+    .stTextArea textarea {
+        height: 300px !important;
+        font-size: 14px !important;
+    }
+    .stTextInput input {
+        font-size: 14px !important;
+    }
+    .stMarkdown {
+        font-size: 14px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     st.title("🚀 Coding Assistant with Pinecone RAG")
     
     # API Key Inputs
@@ -207,7 +223,7 @@ def main():
     
     # Query Section
     st.header("Ask Your Coding Question")
-    query = st.text_area("Enter your coding-related query")
+    query = st.text_area("Enter your coding-related query", height=150)
     
     if st.button("Get Answer"):
         # Validate API keys
@@ -230,7 +246,7 @@ def main():
             
             st.subheader("Retrieved Context")
             for i, ctx in enumerate(context, 1):
-                st.text_area(f"Context {i}", value=ctx, height=100)
+                st.text_area(f"Context {i}", value=ctx, height=300)
         
         except Exception as e:
             st.error(f"Error generating response: {e}")
