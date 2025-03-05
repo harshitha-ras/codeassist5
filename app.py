@@ -15,141 +15,116 @@ from sklearn.metrics import precision_score, recall_score, f1_score
 from rouge import Rouge
 
 class DocumentProcessor:
-    @staticmethod
-    def parse_pdf(file):
-        """Extract text from PDF files"""
-        pdf_reader = PyPDF2.PdfReader(file)
+    def __init__(self):
+        self.text_splitter = TextSplitter()
+
+    def process_file(self, file):
+        file_extension = os.path.splitext(file.name)[1].lower()
+        if file_extension == '.pdf':
+            return self.process_pdf(file)
+        elif file_extension == '.docx':
+            return self.process_docx(file)
+        elif file_extension == '.txt':
+            return self.process_txt(file)
+        else:
+            raise ValueError(f"Unsupported file type: {file_extension}")
+
+    def process_pdf(self, file):
+        pdf_reader = PyPDF2.PdfReader(io.BytesIO(file.read()))
         text = ""
         for page in pdf_reader.pages:
             text += page.extract_text()
-        return text
+        return self.text_splitter.split_text(text)
 
-    @staticmethod
-    def parse_docx(file):
-        """Extract text from DOCX files"""
-        doc = docx.Document(file)
-        return "\n".join([paragraph.text for paragraph in doc.paragraphs])
+    def process_docx(self, file):
+        doc = docx.Document(io.BytesIO(file.read()))
+        text = "\n".join([para.text for para in doc.paragraphs])
+        return self.text_splitter.split_text(text)
 
-    @staticmethod
-    def parse_txt(file):
-        """Extract text from TXT files"""
-        return file.read().decode('utf-8')
+    def process_txt(self, file):
+        text = file.read().decode("utf-8")
+        return self.text_splitter.split_text(text)
 
-    @staticmethod
-    def parse_url(url):
-        """Extract text from web pages"""
-        try:
-            response = requests.get(url)
-            return response.text
-        except Exception as e:
-            st.error(f"Error fetching URL: {e}")
-            return ""
+    def process_url(self, url):
+        response = requests.get(url)
+        response.raise_for_status()
+        text = response.text
+        return self.text_splitter.split_text(text)
 
 class TextSplitter:
-    @staticmethod
-    def split_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
-        """Split text into overlapping chunks"""
-        encoding = tiktoken.get_encoding("cl100k_base")
-        tokens = encoding.encode(text)
-        
+    def __init__(self, chunk_size=1000, chunk_overlap=200):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")
+
+    def split_text(self, text: str) -> List[str]:
+        tokens = self.tokenizer.encode(text)
         chunks = []
-        for i in range(0, len(tokens), chunk_size - overlap):
-            chunk = tokens[i:i + chunk_size]
-            chunks.append(encoding.decode(chunk))
-        
+        for i in range(0, len(tokens), self.chunk_size - self.chunk_overlap):
+            chunk = tokens[i:i + self.chunk_size]
+            chunks.append(self.tokenizer.decode(chunk))
         return chunks
 
 class RAGAssistant:
-    def __init__(self, openai_api_key: str, pinecone_api_key: str):
-        """Initialize RAG Assistant with OpenAI API and Pinecone"""
-        # OpenAI Client
+    def __init__(self, openai_api_key, pinecone_api_key):
         self.openai_client = OpenAI(api_key=openai_api_key)
-        
-        # Pinecone Initialization
-        self.pc = Pinecone(api_key=pinecone_api_key)
-        
-        # Create or connect to index
-        index_name = "coding-assistant-index"
-        
-        # Check if index exists, create if not
-        if index_name not in [index.name for index in self.pc.list_indexes()]:
-            self.pc.create_index(
-                name=index_name, 
-                dimension=1536,  # OpenAI embedding dimension
-                metric='cosine',
+        self.pinecone_client = Pinecone(api_key=pinecone_api_key)
+        self.index_name = "coding-assistant-index"
+        self.initialize_pinecone()
+
+    def initialize_pinecone(self):
+        if self.index_name not in self.pinecone_client.list_indexes().names():
+            self.pinecone_client.create_index(
+                name=self.index_name,
+                metric="cosine",
+                dimension=1536,
                 spec=ServerlessSpec(
-                    cloud='gcp',  # Use GCP for free plan
-                    region='us-central1'
+                    cloud="aws",
+                    region="us-west-2"
                 )
             )
-        
-        # Connect to the index
-        self.index = self.pc.Index(index_name)
+        self.index = self.pinecone_client.Index(self.index_name)
 
     def embed_documents(self, documents: List[str]):
-        """Embed documents using OpenAI embeddings and store in Pinecone"""
-        batch_size = 100
-        
-        for i in range(0, len(documents), batch_size):
-            # Select batch of documents
-            batch_docs = documents[i:i+batch_size]
-            
-            # Create embeddings
-            embeddings = self.openai_client.embeddings.create(
+        embeddings = []
+        for i in range(0, len(documents), 100):
+            batch_docs = documents[i:i+100]
+            batch_embeddings = self.openai_client.embeddings.create(
                 input=batch_docs,
                 model="text-embedding-ada-002"
             )
-            
-            # Prepare vectors for Pinecone
-            vectors = [
-                {
-                    'id': f'doc_{i+j}', 
-                    'values': embeddings.data[j].embedding,
-                    'metadata': {'text': batch_docs[j]}
-                } 
-                for j in range(len(batch_docs))
-            ]
-            
-            # Upsert to Pinecone
-            self.index.upsert(vectors=vectors)
+            embeddings.extend([e.embedding for e in batch_embeddings.data])
+        return embeddings
 
-    def retrieve_context(self, query: str, top_k: int = 5):
-        """Retrieve most relevant documents using semantic search"""
-        # Create query embedding
+    def index_documents(self, documents: List[str]):
+        embeddings = self.embed_documents(documents)
+        vectors = [
+            (f"doc_{i}", embedding, {"text": doc})
+            for i, (doc, embedding) in enumerate(zip(documents, embeddings))
+        ]
+        self.index.upsert(vectors=vectors)
+
+    def retrieve_context(self, query: str, k: int = 5) -> List[str]:
         query_embedding = self.openai_client.embeddings.create(
-            input=query,
+            input=[query],
             model="text-embedding-ada-002"
         ).data[0].embedding
-        
-        # Perform semantic search
-        results = self.index.query(
-            vector=query_embedding, 
-            top_k=top_k,
-            include_metadata=True
-        )
-        
-        # Extract text from metadata
-        return [
-            match['metadata']['text'] 
-            for match in results['matches']
-        ]
 
-    def generate_response(self, query: str, context: List[str]):
-        """Generate response using OpenAI with retrieved context"""
+        results = self.index.query(vector=query_embedding, top_k=k, include_metadata=True)
+        return [match.metadata["text"] for match in results.matches]
+
+    def generate_response(self, query: str, context: List[str]) -> str:
         context_str = "\n\n".join(context)
-        
         messages = [
             {"role": "system", "content": "You are a helpful coding assistant. Use the provided context to help answer the user's question."},
             {"role": "user", "content": f"Context:\n{context_str}\n\nQuery: {query}"}
         ]
-        
         response = self.openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=messages
+            messages=messages,
+            max_tokens=500
         )
-        
         return response.choices[0].message.content
-
 
 class RAGEvaluator:
     def __init__(self, rag_assistant):
@@ -208,17 +183,52 @@ class RAGEvaluator:
         }
 
 def main():
-    # [Keep existing CSS and title]
+    st.set_page_config(page_title="Coding Assistant with Pinecone RAG", page_icon="🚀", layout="wide")
+
+    st.markdown("""
+    <style>
+    .main {
+        background-color: #f0f2f6;
+    }
+    .stButton>button {
+        background-color: #4CAF50;
+        color: white;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     st.title("🚀 Coding Assistant with Pinecone RAG")
     
     openai_api_key = st.text_input("Enter your OpenAI API Key", type="password")
     pinecone_api_key = st.text_input("Enter your Pinecone API Key", type="password")
     
-    # [Keep existing document upload and URL input sections]
-
+    st.header("Document Processing")
+    
+    uploaded_file = st.file_uploader("Choose a file", type=["pdf", "docx", "txt"])
+    url = st.text_input("Or enter a URL")
+    
     if st.button("Process Documents"):
-        # [Keep existing document processing logic]
+        if not (openai_api_key and pinecone_api_key):
+            st.error("Please enter all API keys")
+            return
+        
+        try:
+            processor = DocumentProcessor()
+            rag_assistant = RAGAssistant(openai_api_key, pinecone_api_key)
+            
+            if uploaded_file:
+                chunks = processor.process_file(uploaded_file)
+            elif url:
+                chunks = processor.process_url(url)
+            else:
+                st.error("Please upload a file or enter a URL")
+                return
+            
+            rag_assistant.index_documents(chunks)
+            st.success("Documents processed and indexed successfully!")
+        
+        except Exception as e:
+            st.error(f"Error processing documents: {e}")
 
     st.header("Ask Your Coding Question")
     query = st.text_area("Enter your coding-related query", height=150)
