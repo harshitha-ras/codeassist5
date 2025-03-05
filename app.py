@@ -57,7 +57,7 @@ class TextSplitter:
         return chunks
 
 class RAGAssistant:
-    def __init__(self, openai_api_key: str, pinecone_api_key: str, cloud: str = 'aws', region: str = 'us-west-2'):
+    def __init__(self, openai_api_key: str, pinecone_api_key: str):
         """Initialize RAG Assistant with OpenAI API and Pinecone"""
         # OpenAI Client
         self.openai_client = OpenAI(api_key=openai_api_key)
@@ -75,8 +75,8 @@ class RAGAssistant:
                 dimension=1536,  # OpenAI embedding dimension
                 metric='cosine',
                 spec=ServerlessSpec(
-                    cloud=cloud,
-                    region=region
+                    cloud='aws',
+                    region='us-west-2'
                 )
             )
         
@@ -154,10 +154,6 @@ def main():
     openai_api_key = st.text_input("Enter your OpenAI API Key", type="password")
     pinecone_api_key = st.text_input("Enter your Pinecone API Key", type="password")
     
-    # Cloud and Region Selection
-    cloud = st.selectbox("Select Cloud Provider", ["aws", "gcp", "azure"])
-    region = st.text_input("Enter Region (e.g., us-west-2)", value="us-west-2")
-    
     # Document Upload Section
     st.header("Upload Documents")
     uploaded_files = st.file_uploader(
@@ -199,12 +195,7 @@ def main():
                 chunks.extend(TextSplitter.split_text(doc))
             
             # Initialize RAG Assistant
-            rag_assistant = RAGAssistant(
-                openai_api_key, 
-                pinecone_api_key, 
-                cloud=cloud, 
-                region=region
-            )
+            rag_assistant = RAGAssistant(openai_api_key, pinecone_api_key)
             
             # Embed documents
             rag_assistant.embed_documents(chunks)
@@ -226,12 +217,7 @@ def main():
         
         try:
             # Initialize RAG Assistant
-            rag_assistant = RAGAssistant(
-                openai_api_key, 
-                pinecone_api_key, 
-                cloud=cloud, 
-                region=region
-            )
+            rag_assistant = RAGAssistant(openai_api_key, pinecone_api_key)
             
             # Retrieve context
             context = rag_assistant.retrieve_context(query)
