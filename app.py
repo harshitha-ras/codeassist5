@@ -1,7 +1,6 @@
 import os
 import streamlit as st
-import chromadb
-import tiktoken
+import pinecone
 from typing import List
 import openai
 from openai import OpenAI
@@ -10,6 +9,7 @@ import io
 import PyPDF2
 import docx
 import urllib.parse
+import tiktoken
 
 class DocumentProcessor:
     @staticmethod
@@ -57,41 +57,78 @@ class TextSplitter:
         return chunks
 
 class RAGAssistant:
-    def __init__(self, openai_api_key: str):
-        """Initialize RAG Assistant with OpenAI API and ChromaDB"""
-        self.client = OpenAI(api_key=openai_api_key)
+    def __init__(self, openai_api_key: str, pinecone_api_key: str, pinecone_env: str):
+        """Initialize RAG Assistant with OpenAI API and Pinecone"""
+        # OpenAI Client
+        self.openai_client = OpenAI(api_key=openai_api_key)
         
-        # Initialize ChromaDB client
-        chroma_client = chromadb.Client()
-        self.collection = chroma_client.create_collection(name="code_docs")
+        # Pinecone Initialization
+        pinecone.init(
+            api_key=pinecone_api_key,
+            environment=pinecone_env
+        )
+        
+        # Create or connect to index
+        index_name = "coding-assistant-index"
+        
+        # Check if index exists, create if not
+        if index_name not in pinecone.list_indexes():
+            pinecone.create_index(
+                name=index_name, 
+                dimension=1536,  # OpenAI embedding dimension
+                metric='cosine'
+            )
+        
+        # Connect to the index
+        self.index = pinecone.Index(index_name)
 
     def embed_documents(self, documents: List[str]):
-        """Embed documents using OpenAI embeddings"""
-        for i, doc in enumerate(documents):
-            embedding = self.client.embeddings.create(
-                input=doc,
-                model="text-embedding-ada-002"
-            ).data[0].embedding
+        """Embed documents using OpenAI embeddings and store in Pinecone"""
+        batch_size = 100
+        
+        for i in range(0, len(documents), batch_size):
+            # Select batch of documents
+            batch_docs = documents[i:i+batch_size]
             
-            self.collection.add(
-                embeddings=[embedding],
-                documents=[doc],
-                ids=[f"doc_{i}"]
+            # Create embeddings
+            embeddings = self.openai_client.embeddings.create(
+                input=batch_docs,
+                model="text-embedding-ada-002"
             )
+            
+            # Prepare vectors for Pinecone
+            vectors = [
+                {
+                    'id': f'doc_{i+j}', 
+                    'values': embeddings.data[j].embedding,
+                    'metadata': {'text': batch_docs[j]}
+                } 
+                for j in range(len(batch_docs))
+            ]
+            
+            # Upsert to Pinecone
+            self.index.upsert(vectors=vectors)
 
     def retrieve_context(self, query: str, top_k: int = 3):
         """Retrieve most relevant documents using semantic search"""
-        query_embedding = self.client.embeddings.create(
+        # Create query embedding
+        query_embedding = self.openai_client.embeddings.create(
             input=query,
             model="text-embedding-ada-002"
         ).data[0].embedding
         
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k
+        # Perform semantic search
+        results = self.index.query(
+            vector=query_embedding, 
+            top_k=top_k,
+            include_metadata=True
         )
         
-        return results['documents'][0]
+        # Extract text from metadata
+        return [
+            match['metadata']['text'] 
+            for match in results['matches']
+        ]
 
     def generate_response(self, query: str, context: List[str]):
         """Generate response using OpenAI with retrieved context"""
@@ -102,7 +139,7 @@ class RAGAssistant:
             {"role": "user", "content": f"Context:\n{context_str}\n\nQuery: {query}"}
         ]
         
-        response = self.client.chat.completions.create(
+        response = self.openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=messages
         )
@@ -110,10 +147,12 @@ class RAGAssistant:
         return response.choices[0].message.content
 
 def main():
-    st.title("🚀 Coding Assistant with RAG")
+    st.title("🚀 Coding Assistant with Pinecone RAG")
     
-    # OpenAI API Key Input
+    # API Key Inputs
     openai_api_key = st.text_input("Enter your OpenAI API Key", type="password")
+    pinecone_api_key = st.text_input("Enter your Pinecone API Key", type="password")
+    pinecone_env = st.text_input("Enter your Pinecone Environment (e.g., gcp-starter)")
     
     # Document Upload Section
     st.header("Upload Documents")
@@ -127,8 +166,9 @@ def main():
     url_input = st.text_input("Or enter a URL to extract text")
     
     if st.button("Process Documents"):
-        if not openai_api_key:
-            st.error("Please enter your OpenAI API Key")
+        # Validate API keys
+        if not (openai_api_key and pinecone_api_key and pinecone_env):
+            st.error("Please enter all API keys")
             return
         
         try:
@@ -155,7 +195,7 @@ def main():
                 chunks.extend(TextSplitter.split_text(doc))
             
             # Initialize RAG Assistant
-            rag_assistant = RAGAssistant(openai_api_key)
+            rag_assistant = RAGAssistant(openai_api_key, pinecone_api_key, pinecone_env)
             
             # Embed documents
             rag_assistant.embed_documents(chunks)
@@ -170,13 +210,14 @@ def main():
     query = st.text_area("Enter your coding-related query")
     
     if st.button("Get Answer"):
-        if not openai_api_key:
-            st.error("Please enter your OpenAI API Key")
+        # Validate API keys
+        if not (openai_api_key and pinecone_api_key and pinecone_env):
+            st.error("Please enter all API keys")
             return
         
         try:
             # Initialize RAG Assistant
-            rag_assistant = RAGAssistant(openai_api_key)
+            rag_assistant = RAGAssistant(openai_api_key, pinecone_api_key, pinecone_env)
             
             # Retrieve context
             context = rag_assistant.retrieve_context(query)
