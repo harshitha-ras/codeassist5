@@ -67,6 +67,7 @@ class TextSplitter:
 
 class RAGAssistant:
     def __init__(self, openai_api_key, pinecone_api_key):
+        openai.api_key = openai_api_key
         self.openai_client = OpenAI(api_key=openai_api_key)
         self.pinecone_client = Pinecone(api_key=pinecone_api_key)
         self.index_name = "coding-assistant-index"
@@ -140,11 +141,24 @@ class RAGEvaluator:
             retrieved_context = self.rag_assistant.retrieve_context(query)
             total_retrieval_time += time.time() - start_time
 
-            relevant = [1 if any(t in c for t in truth) else 0 for c in retrieved_context]
-            precisions.append(precision_score([1]*len(truth), relevant, zero_division=1))
-            recalls.append(recall_score([1]*len(truth), relevant, zero_division=1))
-            f1_scores.append(f1_score([1]*len(truth), relevant, zero_division=1))
+            # Flatten ground truth if it's a list of lists
+            if isinstance(truth, list) and all(isinstance(t, list) for t in truth):
+                truth = [item for sublist in truth for item in sublist]
 
+            # Check if any retrieved context matches ground truth
+            relevant = [1 if any(t in c for t in truth) else 0 for c in retrieved_context]
+            
+            # Handle edge cases for precision and recall
+            if len(relevant) == 0 or len(truth) == 0:
+                precisions.append(1.0)
+                recalls.append(1.0)
+                f1_scores.append(1.0)
+            else:
+                precisions.append(precision_score([1]*len(truth), relevant, zero_division=1))
+                recalls.append(recall_score([1]*len(truth), relevant, zero_division=1))
+                f1_scores.append(f1_score([1]*len(truth), relevant, zero_division=1))
+
+            # MRR calculation
             for i, context in enumerate(retrieved_context):
                 if any(t in context for t in truth):
                     mrr_scores.append(1 / (i + 1))
@@ -153,11 +167,13 @@ class RAGEvaluator:
                 mrr_scores.append(0)
 
         return {
-            "avg_precision": sum(precisions) / len(precisions),
-            "avg_recall": sum(recalls) / len(recalls),
-            "avg_f1": sum(f1_scores) / len(f1_scores),
-            "mrr": sum(mrr_scores) / len(mrr_scores),
-            "avg_retrieval_time": total_retrieval_time / len(queries)
+            "Retrieval Metrics": {
+                "Average Precision": round(sum(precisions) / len(precisions), 4),
+                "Average Recall": round(sum(recalls) / len(recalls), 4),
+                "Average F1 Score": round(sum(f1_scores) / len(f1_scores), 4),
+                "Mean Reciprocal Rank (MRR)": round(sum(mrr_scores) / len(mrr_scores), 4),
+                "Average Retrieval Time (seconds)": round(total_retrieval_time / len(queries), 4)
+            }
         }
 
     def evaluate_generation(self, queries, ground_truth):
@@ -169,17 +185,25 @@ class RAGEvaluator:
             generated_response = self.rag_assistant.generate_response(query, context)
             generation_times.append(time.time() - start_time)
 
+            # Flatten ground truth if it's a list of lists
+            if isinstance(truth, list) and all(isinstance(t, list) for t in truth):
+                truth = ' '.join([item for sublist in truth for item in sublist])
+            elif isinstance(truth, list):
+                truth = ' '.join(truth)
+
             rouge_scores.append(self.rouge.get_scores(generated_response, truth)[0])
 
         avg_rouge = {
-            "rouge-1": sum(score["rouge-1"]["f"] for score in rouge_scores) / len(rouge_scores),
-            "rouge-2": sum(score["rouge-2"]["f"] for score in rouge_scores) / len(rouge_scores),
-            "rouge-l": sum(score["rouge-l"]["f"] for score in rouge_scores) / len(rouge_scores),
+            "ROUGE-1 F1 Score": round(sum(score["rouge-1"]["f"] for score in rouge_scores) / len(rouge_scores), 4),
+            "ROUGE-2 F1 Score": round(sum(score["rouge-2"]["f"] for score in rouge_scores) / len(rouge_scores), 4),
+            "ROUGE-L F1 Score": round(sum(score["rouge-l"]["f"] for score in rouge_scores) / len(rouge_scores), 4),
         }
 
         return {
-            "avg_rouge": avg_rouge,
-            "avg_generation_time": sum(generation_times) / len(generation_times)
+            "Generation Metrics": {
+                **avg_rouge,
+                "Average Generation Time (seconds)": round(sum(generation_times) / len(generation_times), 4)
+            }
         }
 
 def main():
@@ -253,18 +277,22 @@ def main():
             # Evaluation
             evaluator = RAGEvaluator(rag_assistant)
             
-            # Sample evaluation data (you should replace this with actual evaluation data)
+            # Sample evaluation data
             evaluation_queries = ["What is a list comprehension in Python?", "Explain decorators in Python"]
             ground_truth = [
                 ["List comprehension is a concise way to create lists", "It consists of brackets containing an expression followed by a for clause"],
                 ["Decorators are a way to modify or enhance functions", "They use the @decorator syntax in Python"]
             ]
 
+            # Perform and display metrics
             retrieval_metrics = evaluator.evaluate_retrieval(evaluation_queries, ground_truth)
             generation_metrics = evaluator.evaluate_generation(evaluation_queries, ground_truth)
 
             st.subheader("Performance Metrics")
+            st.write("Retrieval Metrics:")
             st.json(retrieval_metrics)
+            
+            st.write("Generation Metrics:")
             st.json(generation_metrics)
         
         except Exception as e:
