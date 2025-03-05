@@ -178,8 +178,11 @@ def main():
         accept_multiple_files=True
     )
     
-    # URL Input
-    url_input = st.text_input("Or enter a URL to extract text")
+    # URL Input with default Python tutorial URL
+    url_input = st.text_input(
+        "Or enter a URL to extract text", 
+        value="https://docs.python.org/3/tutorial/datastructures.html"
+    )
     
     if st.button("Process Documents"):
         # Validate API keys
