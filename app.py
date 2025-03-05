@@ -126,17 +126,17 @@ class RAGAssistant:
             max_tokens=500
         )
         return response.choices[0].message.content
-
 class RAGEvaluator:
     def __init__(self, rag_assistant):
         self.rag_assistant = rag_assistant
         self.rouge = Rouge()
 
     def evaluate_retrieval(self, queries, ground_truth):
-        # Validate input
+        # Ensure consistent sample sizes
         if len(queries) != len(ground_truth):
-            st.warning(f"Mismatch in query and ground truth lengths. Expected {len(queries)}, got {len(ground_truth)}")
-            return {"Error": "Inconsistent input lengths"}
+            st.warning(f"Mismatch in query and ground truth lengths. Truncating to {min(len(queries), len(ground_truth))} samples.")
+            queries = queries[:min(len(queries), len(ground_truth))]
+            ground_truth = ground_truth[:min(len(queries), len(ground_truth))]
 
         precisions, recalls, f1_scores, mrr_scores = [], [], [], []
         total_retrieval_time = 0
@@ -146,57 +146,40 @@ class RAGEvaluator:
             retrieved_context = self.rag_assistant.retrieve_context(query)
             total_retrieval_time += time.time() - start_time
 
-            # Debug print
-            st.write(f"Query: {query}")
-            st.write(f"Retrieved Context Length: {len(retrieved_context)}")
-            st.write("Retrieved Context:")
-            for ctx in retrieved_context:
-                st.write(ctx)
-
             # Flatten ground truth if it's a list of lists
             if isinstance(truth, list) and all(isinstance(t, list) for t in truth):
                 truth = [item for sublist in truth for item in sublist]
+
+            # Compute relevance based on context matches
+            relevant = [1 if any(t.lower() in c.lower() for t in truth) else 0 for c in retrieved_context]
             
-            # Convert truth to list if it's not already
-            if not isinstance(truth, list):
-                truth = [truth]
-
-            # Compute relevance
-            def is_relevant(context):
-                return any(
-                    t.lower() in context.lower() 
-                    for t in truth
-                )
-
-            relevant = [is_relevant(context) for context in retrieved_context]
-
-            # Compute metrics
-            try:
-                # If no matches, set precision and recall to 0
-                if not any(relevant):
-                    precisions.append(0.0)
-                    recalls.append(0.0)
-                    f1_scores.append(0.0)
-                else:
-                    # Create binary ground truth labels
-                    y_true = [1] * len(truth)
-                    
-                    precisions.append(precision_score(y_true, relevant, zero_division=1))
-                    recalls.append(recall_score(y_true, relevant, zero_division=1))
-                    f1_scores.append(f1_score(y_true, relevant, zero_division=1))
-            except Exception as e:
-                st.error(f"Metric calculation error: {e}")
+            # Adjust metric calculations
+            if len(relevant) == 0 or len(truth) == 0:
                 precisions.append(0.0)
                 recalls.append(0.0)
                 f1_scores.append(0.0)
+            else:
+                # Use binary labels for ground truth
+                y_true = [1] * len(truth)
+                
+                # Compute metrics
+                try:
+                    precisions.append(precision_score(y_true, relevant, zero_division=1))
+                    recalls.append(recall_score(y_true, relevant, zero_division=1))
+                    f1_scores.append(f1_score(y_true, relevant, zero_division=1))
+                except Exception as e:
+                    st.warning(f"Metric calculation error: {e}")
+                    precisions.append(0.0)
+                    recalls.append(0.0)
+                    f1_scores.append(0.0)
 
             # MRR calculation
-            mrr = 0.0
             for i, context in enumerate(retrieved_context):
-                if is_relevant(context):
-                    mrr = 1 / (i + 1)
+                if any(t.lower() in context.lower() for t in truth):
+                    mrr_scores.append(1 / (i + 1))
                     break
-            mrr_scores.append(mrr)
+            else:
+                mrr_scores.append(0)
 
         # Compute average metrics
         def safe_average(scores):
@@ -232,11 +215,6 @@ class RAGEvaluator:
                 truth = ' '.join([item for sublist in truth for item in sublist])
             elif isinstance(truth, list):
                 truth = ' '.join(truth)
-
-            # Debug print
-            st.write(f"Query: {query}")
-            st.write(f"Generated Response: {generated_response}")
-            st.write(f"Ground Truth: {truth}")
 
             # Handle potential ROUGE score calculation errors
             try:
