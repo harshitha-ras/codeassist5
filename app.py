@@ -133,6 +133,12 @@ class RAGEvaluator:
         self.rouge = Rouge()
 
     def evaluate_retrieval(self, queries, ground_truth):
+        # Ensure consistent sample sizes
+        if len(queries) != len(ground_truth):
+            st.warning(f"Mismatch in query and ground truth lengths. Truncating to {min(len(queries), len(ground_truth))} samples.")
+            queries = queries[:min(len(queries), len(ground_truth))]
+            ground_truth = ground_truth[:min(len(queries), len(ground_truth))]
+
         precisions, recalls, f1_scores, mrr_scores = [], [], [], []
         total_retrieval_time = 0
 
@@ -145,38 +151,58 @@ class RAGEvaluator:
             if isinstance(truth, list) and all(isinstance(t, list) for t in truth):
                 truth = [item for sublist in truth for item in sublist]
 
-            # Check if any retrieved context matches ground truth
-            relevant = [1 if any(t in c for t in truth) else 0 for c in retrieved_context]
+            # Compute relevance based on context matches
+            relevant = [1 if any(t.lower() in c.lower() for t in truth) else 0 for c in retrieved_context]
             
-            # Handle edge cases for precision and recall
+            # Adjust metric calculations
             if len(relevant) == 0 or len(truth) == 0:
-                precisions.append(1.0)
-                recalls.append(1.0)
-                f1_scores.append(1.0)
+                precisions.append(0.0)
+                recalls.append(0.0)
+                f1_scores.append(0.0)
             else:
-                precisions.append(precision_score([1]*len(truth), relevant, zero_division=1))
-                recalls.append(recall_score([1]*len(truth), relevant, zero_division=1))
-                f1_scores.append(f1_score([1]*len(truth), relevant, zero_division=1))
+                # Use binary labels for ground truth
+                y_true = [1] * len(truth)
+                
+                # Compute metrics
+                try:
+                    precisions.append(precision_score(y_true, relevant, zero_division=1))
+                    recalls.append(recall_score(y_true, relevant, zero_division=1))
+                    f1_scores.append(f1_score(y_true, relevant, zero_division=1))
+                except Exception as e:
+                    st.warning(f"Metric calculation error: {e}")
+                    precisions.append(0.0)
+                    recalls.append(0.0)
+                    f1_scores.append(0.0)
 
             # MRR calculation
             for i, context in enumerate(retrieved_context):
-                if any(t in context for t in truth):
+                if any(t.lower() in context.lower() for t in truth):
                     mrr_scores.append(1 / (i + 1))
                     break
             else:
                 mrr_scores.append(0)
 
+        # Compute average metrics
+        def safe_average(scores):
+            return round(sum(scores) / len(scores), 4) if scores else 0.0
+
         return {
             "Retrieval Metrics": {
-                "Average Precision": round(sum(precisions) / len(precisions), 4),
-                "Average Recall": round(sum(recalls) / len(recalls), 4),
-                "Average F1 Score": round(sum(f1_scores) / len(f1_scores), 4),
-                "Mean Reciprocal Rank (MRR)": round(sum(mrr_scores) / len(mrr_scores), 4),
+                "Average Precision": safe_average(precisions),
+                "Average Recall": safe_average(recalls),
+                "Average F1 Score": safe_average(f1_scores),
+                "Mean Reciprocal Rank (MRR)": safe_average(mrr_scores),
                 "Average Retrieval Time (seconds)": round(total_retrieval_time / len(queries), 4)
             }
         }
 
     def evaluate_generation(self, queries, ground_truth):
+        # Ensure consistent sample sizes
+        if len(queries) != len(ground_truth):
+            st.warning(f"Mismatch in query and ground truth lengths. Truncating to {min(len(queries), len(ground_truth))} samples.")
+            queries = queries[:min(len(queries), len(ground_truth))]
+            ground_truth = ground_truth[:min(len(queries), len(ground_truth))]
+
         rouge_scores, generation_times = [], []
 
         for query, truth in zip(queries, ground_truth):
@@ -191,17 +217,27 @@ class RAGEvaluator:
             elif isinstance(truth, list):
                 truth = ' '.join(truth)
 
-            rouge_scores.append(self.rouge.get_scores(generated_response, truth)[0])
+            # Handle potential ROUGE score calculation errors
+            try:
+                rouge_scores.append(self.rouge.get_scores(generated_response, truth)[0])
+            except Exception as e:
+                st.warning(f"ROUGE score calculation error: {e}")
+                # Append a default score if calculation fails
+                rouge_scores.append({
+                    "rouge-1": {"f": 0.0},
+                    "rouge-2": {"f": 0.0},
+                    "rouge-l": {"f": 0.0}
+                })
 
-        avg_rouge = {
-            "ROUGE-1 F1 Score": round(sum(score["rouge-1"]["f"] for score in rouge_scores) / len(rouge_scores), 4),
-            "ROUGE-2 F1 Score": round(sum(score["rouge-2"]["f"] for score in rouge_scores) / len(rouge_scores), 4),
-            "ROUGE-L F1 Score": round(sum(score["rouge-l"]["f"] for score in rouge_scores) / len(rouge_scores), 4),
-        }
+        # Compute average metrics
+        def safe_average(scores, key1, key2):
+            return round(sum(score[key1][key2] for score in scores) / len(scores), 4)
 
         return {
             "Generation Metrics": {
-                **avg_rouge,
+                "ROUGE-1 F1 Score": safe_average(rouge_scores, "rouge-1", "f"),
+                "ROUGE-2 F1 Score": safe_average(rouge_scores, "rouge-2", "f"),
+                "ROUGE-L F1 Score": safe_average(rouge_scores, "rouge-l", "f"),
                 "Average Generation Time (seconds)": round(sum(generation_times) / len(generation_times), 4)
             }
         }
